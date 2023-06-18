@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException, status, Depends
 import db
-from models import Book, User
+from models import Book, User, Borrowbook
 from passlib.hash import bcrypt
 from fastapi.security import  OAuth2PasswordRequestForm
 from jose import JWTError
+from bson import ObjectId
 
 
 app = FastAPI()
@@ -62,39 +63,119 @@ def protected_route(token: str = Depends(db.oauth2_scheme)):
     except JWTError:
         raise HTTPException(status_code = 401, detail = 'invalid token',headers = {"WWW-Authenticate": "bearer"})
 
-@app.post('/create_book')
-def create(data: Book):
-    data = Book(id = data.id, title = data.title, author = data.author)
-    res = db.create(data)
-    return {"message": "book created successfully", "inserted_id": res}
+
+@app.post("/books")
+def create_book(data: Book, token: str = Depends(db.oauth2_scheme)):
+    try:
+        payload = db.jwt.decode(token, db.secret_key, algorithms=[db.algorithm])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        data = Book(id = data.id, title = data.title, author = data.author)
+        res = db.create(data)
+        return {"message": "Book created successfully", "inserted_id": res}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 @app.get('/get_all_data')
-def all():
-    data = db.all()
-    return {"book_details": data}
+def all(token: str = Depends(db.oauth2_scheme)):
+    try:
+        payload = db.jwt.decode(token, db.secret_key, algorithms = [db.algorithm])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="invalid token")
+        data = db.all()
+        return {"book_details": data}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="invalid token")
 
 @app.get('/get/{id}')
-def get_one(id: str):
-    data = db.get_one(id)
-    return {"selected_book": data}
+def get_one(id: str, token: str = Depends(db.oauth2_scheme)):
+    try:
+        payload = db.jwt.decode(token, db.secret_key, algorithms = [db.algorithm])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="invalid token")
+        data = db.get_one(id)
+        return {"selected_book": data}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid Token")
 
 @app.put('/update_book')
-def update(data: Book):
-    data = db.update(data)
-    return {"message": "book updated successfully", "updated_count": data}
+def update(data: Book, token: str = Depends(db.oauth2_scheme)):
+     try:
+        payload = db.jwt.decode(token, db.secret_key, algorithms = [db.algorithm])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="invalid token")
+        data = db.update(data)
+        return {"message": "book updated successfully", "updated_count": data}
+     except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid Token")
 
 @app.delete('/delete_book')
-def delete(id: str):
-    data = db.delete(id)
-    return {"message": "book deleted successfully", "delete_count": data}
+def delete(id: str, token:str = Depends(db.oauth2_scheme)):
+     try:
+        payload = db.jwt.decode(token, db.secret_key, algorithms = [db.algorithm])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="invalid token")
+        data = db.delete(id)
+        return {"message": "book deleted successfully", "delete_count": data}
+     except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid Token") 
+     
 
-# add a new member
+# # add a new member
 # @app.post('/members')
 # def create_member(mem: Member):
 #     mem_dict = mem.dict()
 #     inserted_mem = db.member_collection.insert_one(mem_dict)
 #     mem_id = str(inserted_mem.inserted_id)
 #     return {"message": "member created successfully", "member_id": mem_id}
+
+# borrow books:
+@app.post("/books/borrow_book")
+def borrow_book(id: str, username: str = Depends(db.get_current_user)):
+    # book_collection = db["books"]
+    # user_collection = db["users"]
+    try:
+        book_object_id = ObjectId(id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid id")
+    # Check if the book exists
+    book = db.book_collection.find_one({"_id": book_object_id})
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    # Check if the book is already borrowed by the user
+    if id in db.user_collection.find_one({"username": username}).get("borrowed_books", []):
+        raise HTTPException(status_code=400, detail="Book already borrowed by user")
+
+    # Check if the book is available for borrowing
+    if book["quantity"] is None or book["quantity"] <= 0:
+        raise HTTPException(status_code=400, detail="Book is not available")
+
+    # Update the book quantity and user's borrowed books
+    db.book_collection.update_one({"_id": book_object_id}, {"$inc": {"quantity": -1}})
+    db.user_collection.update_one({"username": username}, {"$push": {"borrowed_books": id}})
+
+    return {"message": "Book borrowed successfully"}
+
+
+# return bboks:
+@app.post('/books/return_books')
+def return_book(data: Borrowbook):
+    book = db.book_collection.find_one({"_id": data.id, "availability": False})
+    if book is None:
+        raise HTTPException(status_code=404, detail="book not borrowd by the user")
+    db.book_collection.update_one({"_id": data.id}, {"$set": {"availabilty": True}})
+    db.user_collection.update_one({"username": data.username}, {"$pull": {"borrowed_books": data.id}})
+    return {"message": "book returned successfully"}
+
+
+
 
 
 
